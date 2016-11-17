@@ -57,6 +57,8 @@ WEIGHT_MAP_CUT = 0.5
 PSF_CUT = 0.01
 GAIN = 13.42
 
+MODELS_ZERO_POINT = 30.
+
 """
 FUNCTIONS
 """
@@ -615,7 +617,7 @@ parser.add_argument('--psf_models', default='/home/walterjr/Documents/Completene
                     help='PSF models FITS that was applied to the models', metavar='PSF_MODELS.fits')
 parser.add_argument('--psf_image', default='', help='PSF models FITS \
                     to be applied to the models', metavar='PSF_IMAGE.fits')
-parser.add_argument('--models_path', default='/home/walterjr/Documents/Completeness/Models/Stars/', 
+parser.add_argument('--models_path', default='models_test/', 
                     help='path to where all the models images are')
 parser.add_argument('--mag_zero_point', default=None) #TODO: do a if for the instrumental or observed mag later
 parser.add_argument('--models_per_mag', default=100, type = int,
@@ -687,22 +689,26 @@ imageinNx = N.shape(imageinData)[1]
 Models handling.
 NOTE: This version is for CHEFS galaxy models models.
 """
-
+i=0
 if(modelsType=='GALAXY'):
     if not(os.access(modelsFolder+"/summary.model",os.F_OK)):
         print "Creating the summary file of the models..."
         imagelist = [image for image in commands.getoutput("ls "+modelsFolder).split() if ".fits" in image]
         s = "# Model Flux\n"
         for image in imagelist:
-        	Data = fits.open(modelsFolder+"/"+image)[0].data
-        	flux = N.sum(Data)
-        	s += image.split("_")[0]+"\t"+str(flux)+"\n"
+            Data = fits.open(modelsFolder+"/"+image)[0].data
+            flux = N.sum(Data)
+            s += str(i)+"\t"+str(flux)+"\t"+image+"\n"
+            i=i+1
         f = open(modelsFolder+"/summary.model", "a")
         f.write(s)
         f.close()	
     # The fluxes of the models in the folder!
-    datamodel = N.loadtxt(modelsFolder+"/summary.model")
-    magsmodel = N.where(datamodel[:,1] >= 0, -2.5*N.log10(datamodel[:,1]) + 25.5, 0)
+    datamodel = N.genfromtxt(modelsFolder+"/summary.model", dtype=str)
+    #print datamodel
+    #print N.shape(datamodel[:,1])
+    #datamodel = N.loadtxt(modelsFolder+"/summary.model", dtype={)
+    magsmodel = N.where(datamodel[:,1].astype(float) >= 0, -2.5*N.log10(datamodel[:,1].astype(float)) + 25.5, 0)
 
 dm = 0.25
 magScale = N.arange(float(settings['mag_range_min'])-magZeroPoint,float(settings['mag_range_max'])-magZeroPoint,dm)
@@ -779,57 +785,58 @@ for i in range(iterations):
         # The models that are in the desired magnitude range
         modelTargets = N.where((magsmodel >= magnitude - dm/2. + magZeroPoint) & (magsmodel < magnitude + dm/2. + magZeroPoint))[0]
         
+        #print len(modelTargets), N.shape(modelTargets)
         
         print "\t", magnitude + magZeroPoint, " ..."
         print "\t", N.where((magsmodel >= magnitude - dm/2. + magZeroPoint) & (magsmodel < magnitude + dm/2. + magZeroPoint))
         
-        #if(len(modelTargets))>0:
-        for j in range(MODELS_PER_MAG):
-        # I read the model and scale to the targeted flux
-            ModelIndex = random.choice(modelTargets)
-            if(modelsType=='STAR'):
-                modelDataOrig = modelDataExtended
-            else:
-                modelDataOrig = fits.open(modelsFolder+"/"+str(int(datamodel[ModelIndex][0]))+"_model.fits")[0].data
-            modelData = modelDataOrig*datamodel[ModelIndex][1]
-            #print N.sum(modelDataExtended)
-            flux = N.sum(modelData)
-            #print N.sum(modelDataOrig), flux
-            
+        if(len(modelTargets))>0:
+            for j in range(MODELS_PER_MAG):
+            # I read the model and scale to the targeted flux
+                ModelIndex = random.choice(modelTargets)
+                if(modelsType=='STAR'):
+                    modelData = modelDataExtended*N.float(datamodel[ModelIndex][1])
+                else:
+                    modelData = fits.open(modelsFolder+"/"+datamodel[ModelIndex][2])[0].data
+                
+                #print N.sum(modelDataExtended)
+                flux = N.sum(modelData)
+                #print N.sum(modelDataOrig), flux
+                
+        
+                #print -2.5*N.log10(flux) + magZeroPoint
+                
+                # PSF convolution and final shape of the model
+                modelDataPSF = convolve2d(modelData, dataPSF)
+                #modelNy = N.shape(modelDataPSF)[0]
+                #modelNx = N.shape(modelDataPSF)[1]
+                
+                modelNy = N.shape(modelData)[0]
+                modelNx = N.shape(modelData)[1]
+                	
+                # This includes the Pisson noise in the model.
+                # I checked that several "poisson" curves are very close to the "no poisson" one. So I skip this step.
+                #modelDataP = N.random.poisson(modelData*GAIN)/GAIN
     
-            #print -2.5*N.log10(flux) + magZeroPoint
-            
-            # PSF convolution and final shape of the model
-            modelDataPSF = convolve2d(modelData, dataPSF)
-            #modelNy = N.shape(modelDataPSF)[0]
-            #modelNx = N.shape(modelDataPSF)[1]
-            
-            modelNy = N.shape(modelData)[0]
-            modelNx = N.shape(modelData)[1]
-            	
-            # This includes the Pisson noise in the model.
-            # I checked that several "poisson" curves are very close to the "no poisson" one. So I skip this step.
-            #modelDataP = N.random.poisson(modelData*GAIN)/GAIN
-
-            # random position of the source, leaving a strip near the boundaries
-            posx = N.random.randint(radius,imageinNx - radius)    
-            posy = N.random.randint(radius,imageinNy - radius)
-            # RA and DEC of the source. Needed to apply the mangle mask
-            ra, dec = w.wcs_pix2world(posx+1+modelNx/2, posy+1+modelNy/2, 1)
-            
-            while(not(isInsideImage(posx,posy,modelNx,modelNy,imageinNx,imageinNy) & (mng.polyid([ra], [dec])[0] >= 0) & (N.sum(dataSeg[posy+modelNy/2-radius:posy+modelNy/2+radius, posx+modelNx/2-radius:posx+modelNx/2+radius]) == 0) )):
-                # If the position is not OK, new position :D
+                # random position of the source, leaving a strip near the boundaries
                 posx = N.random.randint(radius,imageinNx - radius)    
                 posy = N.random.randint(radius,imageinNy - radius)
+                # RA and DEC of the source. Needed to apply the mangle mask
                 ra, dec = w.wcs_pix2world(posx+1+modelNx/2, posy+1+modelNy/2, 1)
-                		
-            # Add the model to the segmentation map with value 2
-            dataSegout[posy+modelNy/2-radius:posy+modelNy/2+radius, posx+modelNx/2-radius:posx+modelNx/2+radius] = 2
-            sumModelIntoImage(posx, posy, modelNx, modelNy, modelData, imageoutData)
-            modelInsertedID += 1
-
-            modelsSexTable.append([int(posx+1+modelNx/2), int(posy+1+modelNy/2), modelMagID, modelInsertedID, magnitude])
-            modelsInsertedTable.append([modelInsertedID, 0, modelMagID, magnitude])
+                
+                while(not(isInsideImage(posx,posy,modelNx,modelNy,imageinNx,imageinNy) & (mng.polyid([ra], [dec])[0] >= 0) & (N.sum(dataSeg[posy+modelNy/2-radius:posy+modelNy/2+radius, posx+modelNx/2-radius:posx+modelNx/2+radius]) == 0) )):
+                    # If the position is not OK, new position :D
+                    posx = N.random.randint(radius,imageinNx - radius)    
+                    posy = N.random.randint(radius,imageinNy - radius)
+                    ra, dec = w.wcs_pix2world(posx+1+modelNx/2, posy+1+modelNy/2, 1)
+                    		
+                # Add the model to the segmentation map with value 2
+                dataSegout[posy+modelNy/2-radius:posy+modelNy/2+radius, posx+modelNx/2-radius:posx+modelNx/2+radius] = 2
+                sumModelIntoImage(posx, posy, modelNx, modelNy, modelData, imageoutData)
+                modelInsertedID += 1
+    
+                modelsSexTable.append([int(posx+1+modelNx/2), int(posy+1+modelNy/2), modelMagID, modelInsertedID, magnitude])
+                modelsInsertedTable.append([modelInsertedID, 0, modelMagID, magnitude])
             
         modelMagID += 1
             #modelsOutTable.append([0, modelMagID, magnitude, 0.0, 0.0, magnitude])
@@ -902,7 +909,7 @@ print "compe: ", list(compe)
 print "bias: ", list(bias)
 
 f = open("biasfile.txt", "w")
-f.write(str(N.median(mags))+" "+str(N.mean(compe))+"\n")
+f.write(str(str(magScale))+" "+str(comp)+"\n")
 f.close()
 
 imageinHDUList.close()
